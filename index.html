@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Web MeArm Controller</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #121212; color: #fff; padding: 20px; }
+        .container { max-width: 500px; margin: auto; background: #1e1e1e; padding: 20px; border-radius: 8px; }
+        .control-group { margin: 15px 0; display: flex; align-items: center; }
+        .control-group label { width: 80px; font-weight: bold; }
+        .control-group input { flex-grow: 1; margin: 0 10px; }
+        .control-group span { width: 40px; text-align: right; }
+        button { padding: 10px; margin: 5px 2px; background: #007acc; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:disabled { background: #555; }
+        textarea { width: 100%; height: 120px; background: #000; color: #0f0; font-family: monospace; box-sizing: border-box; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>MeArm 4-Servo Web Controller</h2>
+    <button id="connectBtn">Connect to Pico</button>
+    <button id="disconnectBtn" disabled>Disconnect</button>
+    <p id="status">Status: Not Connected</p>
+
+    <!-- Sliders matching original Python constraints -->
+    <div class="control-group">
+        <label>Base</label>
+        <input type="range" id="slider0" min="1" max="179" value="90">
+        <block><span id="val0">90</span>°</block>
+    </div>
+    <div class="control-group">
+        <label>Left</label>
+        <input type="range" id="slider1" min="35" max="170" value="90">
+        <block><span id="val1">90</span>°</block>
+    </div>
+    <div class="control-group">
+        <label>Right</label>
+        <input type="range" id="slider2" min="30" max="130" value="90">
+        <block><span id="val2">90</span>°</block>
+    </div>
+    <div class="control-group">
+        <label>Claw</label>
+        <input type="range" id="slider3" min="80" max="170" value="40">
+        <block><span id="val3">40</span>°</block>
+    </div>
+
+    <button id="homeBtn">Home Arm</button>
+    
+    <h3>Hardware Console</h3>
+    <textarea id="console" readonly></textarea>
+</div>
+
+<script>
+let port, writer, reader;
+let sendPending = false;
+let lastSent = "";
+let lastSendTime = 0;
+
+const sliders = [
+    document.getElementById('slider0'), 
+    document.getElementById('slider1'), 
+    document.getElementById('slider2'), 
+    document.getElementById('slider3')
+];
+const outputs = [
+    document.getElementById('val0'), 
+    document.getElementById('val1'), 
+    document.getElementById('val2'), 
+    document.getElementById('val3')
+];
+const consoleTex = document.getElementById('console');
+const statusText = document.getElementById('status');
+
+// Update value displays dynamically
+sliders.forEach((slider, idx) => {
+    slider.addEventListener('input', () => {
+        outputs[idx].innerText = slider.value;
+        sendPending = true;
+    });
+});
+
+// FIXED: Populated the full array values matching your exact home configurations
+document.getElementById('homeBtn').addEventListener('click', () => {
+    const home = [90, 90, 90, 40];
+    sliders.forEach((s, idx) => { 
+        s.value = home[idx]; 
+        outputs[idx].innerText = home[idx]; 
+    });
+    sendPending = true;
+});
+
+// Serial Connection
+document.getElementById('connectBtn').addEventListener('click', async () => {
+    try {
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 });
+        writer = port.writable.getWriter();
+        statusText.innerText = "Status: Connected to hardware.";
+        document.getElementById('connectBtn').disabled = true;
+        document.getElementById('disconnectBtn').disabled = false;
+        
+        // Start read loop
+        readSerial();
+        // Start transmit loop
+        setInterval(txTick, 40); 
+    } catch (err) {
+        statusText.innerText = "Error: " + err;
+    }
+});
+
+document.getElementById('disconnectBtn').addEventListener('click', async () => {
+    if (writer) { await writer.releaseLock(); }
+    if (port) { await port.close(); }
+    statusText.innerText = "Status: Disconnected.";
+    document.getElementById('connectBtn').disabled = false;
+    document.getElementById('disconnectBtn').disabled = true;
+});
+
+// Asynchronous read loop matching the background thread worker logic
+async function readSerial() {
+    while (port && port.readable) {
+        reader = port.readable.getReader();
+        try {
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                const text = new TextDecoder().decode(value);
+                consoleTex.value += text;
+                consoleTex.scrollTop = consoleTex.scrollHeight;
+            }
+        } catch (err) {
+            break;
+        } finally {
+            reader.releaseLock();
+        }
+    }
+}
+
+// FIXED: Explicitly maps the indices of the array elements to construct the packet string
+async function txTick() {
+    if (!writer || !sendPending) return;
+    const now = Date.now();
+    if (now - lastSendTime > 40) {
+        const packet = `${sliders[0].value},${sliders[1].value},${sliders[2].value},${sliders[3].value}\n`;
+        if (packet !== lastSent) {
+            const data = new TextEncoder().encode(packet);
+            await writer.write(data);
+            lastSent = packet;
+            lastSendTime = now;
+            sendPending = false;
+        }
+    }
+}
+</script>
+</body>
+</html>
