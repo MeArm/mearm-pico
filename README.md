@@ -40,6 +40,8 @@ A MicroPython and Python-based control suite for the **MeArm Robot Arm** powered
 ### Suggested Pinout Configuration
 These are the pins used by the MeArm Pico board V1.0, and by every firmware script in this repo.
 
+**You can buy a [MeArm Pi Pico Board here](https://https://shop.mearm.com/products/raspberry-pi-pico-mearm-robot-arm-controller-board)**
+
 | MeArm Servo | Pico GPIO Pin | Software limits |
 | :--- | :--- | :--- |
 | **Base** | GPIO 6 | 1–179° |
