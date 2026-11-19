@@ -2,13 +2,16 @@ import sys
 import uselect
 from machine import Pin, PWM, I2C
 import time
-import ssd1306  # Ensure ssd1306.py is saved on your Pico!
+try:
+    import ssd1306  # Ensure ssd1306.py is saved on your Pico!
+except ImportError:
+    ssd1306 = None
 import random
 
 # 1. Map physical GPIO pins
 BASE_PIN     = 6
-SHOULDER_PIN = 8
-ELBOW_PIN    = 7
+SHOULDER_PIN = 7
+ELBOW_PIN    = 8
 GRIPPER_PIN  = 9
 
 # 2. SOFTWARE SAFETY LIMITS (Min Angle, Max Angle)
@@ -39,7 +42,7 @@ servos = [
     init_servo(GRIPPER_PIN)
 ]
 
-# 4. OLED Display Setup (128x32 px on I2C1)
+# 4. OLED Display Setup (128x32 px on I2C0, GP12/GP13)
 try:
     i2c = I2C(0, sda=Pin(12), scl=Pin(13), freq=400000)
     oled = ssd1306.SSD1306_I2C(128, 32, i2c)
@@ -50,8 +53,8 @@ except Exception as e:
     oled_active = False
 
 # Track floating points for precise fractional-degree tracking
-current_angles = [90.0, 90.0, 90.0, 40.0]  
-target_angles  = [90.0, 90.0, 90.0, 40.0]
+current_angles = [90.0, 90.0, 90.0, 90.0]  
+target_angles  = [90.0, 90.0, 90.0, 90.0]
 system_status  = "Ready"
 
 # Animation & Idle State Variables
@@ -143,8 +146,8 @@ def render_robot_eyes():
     # --- AKNO EXPRESSION LAYER ---
     if is_blinking:
         # Blink state: Drawn as simple crisp structural horizontal vectors
-        oled.hline(LEFT_X, 16, EYE_W, 1)
-        oled.hline(RIGHT_X, 16, EYE_W, 1)
+        oled.hline(LEFT_X, 16 + offset_y, EYE_W, 1)
+        oled.hline(RIGHT_X, 16 + offset_y, EYE_W, 1)
     else:
         # Gripper Reaction Mode: Squashes height down to look "suspicious/focused"
         if abs(gripper_delta) > 1.0:
@@ -181,6 +184,8 @@ while True:
                 
                 try:
                     angles = [float(x.strip()) for x in buffer.split(",")]
+                    if any(a != a for a in angles):  # NaN would crash set_angle()
+                        raise ValueError("NaN")
                     if len(angles) == 4:
                         
                         # --- Safety Bound Checker Loop ---
@@ -214,7 +219,7 @@ while True:
                 except ValueError:
                     print("Error: Invalid numbers.")
                 buffer = "" 
-        else:
+        elif len(buffer) < 64:  # cap length so line noise can't exhaust RAM
             buffer += char
 
     # --- PART B: Independent Ramping Engine ---
