@@ -27,22 +27,22 @@
     <div class="control-group">
         <label>Base</label>
         <input type="range" id="slider0" min="1" max="179" value="90">
-        <block><span id="val0">90</span>°</block>
+        <span><span id="val0">90</span>°</span>
     </div>
     <div class="control-group">
         <label>Left</label>
         <input type="range" id="slider1" min="35" max="170" value="90">
-        <block><span id="val1">90</span>°</block>
+        <span><span id="val1">90</span>°</span>
     </div>
     <div class="control-group">
         <label>Right</label>
         <input type="range" id="slider2" min="30" max="130" value="90">
-        <block><span id="val2">90</span>°</block>
+        <span><span id="val2">90</span>°</span>
     </div>
     <div class="control-group">
         <label>Claw</label>
-        <input type="range" id="slider3" min="80" max="170" value="40">
-        <block><span id="val3">40</span>°</block>
+        <input type="range" id="slider3" min="80" max="170" value="90">
+        <span><span id="val3">90</span>°</span>
     </div>
 
     <button id="homeBtn">Home Arm</button>
@@ -53,6 +53,8 @@
 
 <script>
 let port, writer, reader;
+let txTimer = null;
+let readLoopDone = null;
 let sendPending = false;
 let lastSent = "";
 let lastSendTime = 0;
@@ -82,7 +84,7 @@ sliders.forEach((slider, idx) => {
 
 // FIXED: Populated the full array values matching your exact home configurations
 document.getElementById('homeBtn').addEventListener('click', () => {
-    const home = [90, 90, 90, 40];
+    const home = [90, 90, 90, 90];
     sliders.forEach((s, idx) => { 
         s.value = home[idx]; 
         outputs[idx].innerText = home[idx]; 
@@ -99,40 +101,58 @@ document.getElementById('connectBtn').addEventListener('click', async () => {
         statusText.innerText = "Status: Connected to hardware.";
         document.getElementById('connectBtn').disabled = true;
         document.getElementById('disconnectBtn').disabled = false;
-        
+
+        lastSent = "";
+        sendPending = true; // push the current slider state to the arm
         // Start read loop
-        readSerial();
-        // Start transmit loop
-        setInterval(txTick, 40); 
+        readLoopDone = readSerial();
+        // Start transmit loop (only one, even after reconnecting)
+        if (txTimer) clearInterval(txTimer);
+        txTimer = setInterval(txTick, 40);
     } catch (err) {
         statusText.innerText = "Error: " + err;
     }
 });
 
 document.getElementById('disconnectBtn').addEventListener('click', async () => {
-    if (writer) { await writer.releaseLock(); }
-    if (port) { await port.close(); }
-    statusText.innerText = "Status: Disconnected.";
+    if (txTimer) { clearInterval(txTimer); txTimer = null; }
+    const p = port, w = writer;
+    port = null; writer = null;
+    try {
+        // The read loop holds a lock on port.readable; cancel it before closing
+        if (reader) { await reader.cancel(); }
+        if (readLoopDone) { await readLoopDone; }
+        if (w) { w.releaseLock(); }
+        if (p) { await p.close(); }
+        statusText.innerText = "Status: Disconnected.";
+    } catch (err) {
+        statusText.innerText = "Error while disconnecting: " + err;
+    }
     document.getElementById('connectBtn').disabled = false;
     document.getElementById('disconnectBtn').disabled = true;
 });
 
 // Asynchronous read loop matching the background thread worker logic
 async function readSerial() {
+    // One decoder in streaming mode so multi-byte characters split across chunks decode correctly
+    const decoder = new TextDecoder();
     while (port && port.readable) {
         reader = port.readable.getReader();
         try {
             while (true) {
                 const { value, done } = await reader.read();
                 if (done) break;
-                const text = new TextDecoder().decode(value);
-                consoleTex.value += text;
+                consoleTex.value += decoder.decode(value, { stream: true });
+                if (consoleTex.value.length > 20000) {
+                    consoleTex.value = consoleTex.value.slice(-10000);
+                }
                 consoleTex.scrollTop = consoleTex.scrollHeight;
             }
         } catch (err) {
             break;
         } finally {
             reader.releaseLock();
+            reader = null;
         }
     }
 }
@@ -143,12 +163,18 @@ async function txTick() {
     const now = Date.now();
     if (now - lastSendTime > 40) {
         const packet = `${sliders[0].value},${sliders[1].value},${sliders[2].value},${sliders[3].value}\n`;
-        if (packet !== lastSent) {
+        if (packet === lastSent) {
+            sendPending = false;
+        } else {
             const data = new TextEncoder().encode(packet);
-            await writer.write(data);
             lastSent = packet;
             lastSendTime = now;
             sendPending = false;
+            try {
+                await writer.write(data);
+            } catch (err) {
+                statusText.innerText = "Write error: " + err;
+            }
         }
     }
 }

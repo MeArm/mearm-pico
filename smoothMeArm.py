@@ -1,7 +1,7 @@
 #Basic Firmware for the MeArm Pico
 #This code, while being short contains some great features
 #First it reads serial data in a "non blocking" way, checking for a command but moving on if its not there
-#Second it moves the servos from point A to point B in a smooth way using Linear Interpolation (Lerp)
+#Second it moves the servos from point A to point B in a smooth way, closing a fixed fraction of the gap each tick (exponential easing)
 #This also moves each servo sequentially in a micro step which helps with power consumption and avoids spikes 
 
 import sys
@@ -11,8 +11,8 @@ import time
 
 # 1. Map physical GPIO pins
 BASE_PIN     = 6
-SHOULDER_PIN = 8
-ELBOW_PIN    = 7
+SHOULDER_PIN = 7
+ELBOW_PIN    = 8
 GRIPPER_PIN  = 9
 
 # 2. SOFTWARE SAFETY LIMITS (Min Angle, Max Angle)
@@ -78,6 +78,8 @@ while True:
             if buffer:
                 try:
                     angles = [float(x.strip()) for x in buffer.split(",")]
+                    if any(a != a for a in angles):  # NaN would crash set_angle()
+                        raise ValueError("NaN")
                     if len(angles) == 4:
                         
                         # --- Safety Bound Checker Loop ---
@@ -104,7 +106,7 @@ while True:
                 except ValueError:
                     print("Error: Invalid numbers.")
                 buffer = "" 
-        else:
+        elif len(buffer) < 64:  # cap length so line noise can't exhaust RAM
             buffer += char
 
     # --- PART B: Independent Ramping Engine ---
