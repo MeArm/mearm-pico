@@ -3,12 +3,16 @@ import uselect
 from machine import Pin, PWM
 
 # Configure MeArm Servos on PWM pins
+# (MeArm Pico board V1.0 pinout: GP6-GP9)
 servos = {
-    "B": PWM(Pin(0)),  # Base
-    "S": PWM(Pin(1)),  # Shoulder
-    "E": PWM(Pin(2)),  # Elbow
-    "C": PWM(Pin(3))   # Claw
+    "B": PWM(Pin(6)),  # Base
+    "S": PWM(Pin(7)),  # Shoulder (Left)
+    "E": PWM(Pin(8)),  # Elbow (Right)
+    "C": PWM(Pin(9))   # Claw
 }
+
+# Software safety limits (min, max) - same as smoothMeArm.py
+LIMITS = {"B": (1, 179), "S": (35, 170), "E": (30, 130), "C": (80, 170)}
 
 # Set frequency standard for 9g hobby servos (50Hz)
 for servo in servos.values():
@@ -17,7 +21,8 @@ for servo in servos.values():
 def set_angle(servo_id, angle):
     """Converts 0-180 degrees to Pico's 16-bit PWM duty cycle (approx 1638 to 8192)"""
     if servo_id in servos:
-        angle = max(0, min(180, angle)) # Constrain limits
+        lo, hi = LIMITS[servo_id]
+        angle = max(lo, min(hi, angle)) # Constrain limits
         # Duty cycle math for 50Hz: 0.5ms (0 deg) to 2.5ms (180 deg)
         duty = int(1638 + (angle / 180) * (8192 - 1638))
         servos[servo_id].duty_u16(duty)
@@ -45,5 +50,5 @@ while True:
                 except ValueError:
                     pass
             buffer = ""
-        else:
+        elif len(buffer) < 32:  # cap length so line noise can't exhaust RAM
             buffer += char
