@@ -28,6 +28,33 @@ JOINT_LIMITS = [
 
 JOINT_NAMES = ["Base", "Left", "Right", "Claw"]
 
+# Home pose - every value must lie inside JOINT_LIMITS
+HOME_POSITIONS = [90, 90, 90, 90]
+
+
+def clamp_angle(idx, value):
+    lo, hi = JOINT_LIMITS[idx]
+    return max(lo, min(hi, int(value)))
+
+
+def validate_points(pts):
+    """Check a loaded recording; returns points sorted by time with angles clamped."""
+    if not isinstance(pts, list) or not pts:
+        raise ValueError("The selected JSON profile contains no points.")
+    out = []
+    for p in pts:
+        if not isinstance(p, dict) or "t" not in p or "angles" not in p:
+            raise ValueError("Each point needs a 't' and an 'angles' entry.")
+        a = p["angles"]
+        if not isinstance(a, list) or len(a) != 4:
+            raise ValueError("Each point needs exactly 4 angles.")
+        t = float(p["t"])
+        if t != t or t < 0:
+            raise ValueError("Bad time value.")
+        out.append({"t": t, "angles": [clamp_angle(i, float(v)) for i, v in enumerate(a)]})
+    out.sort(key=lambda p: p["t"])
+    return out
+
 
 class App:
 
@@ -58,10 +85,8 @@ class App:
         self.port_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Not connected")
 
-        # Initialize angles to a safe home position (90, 90, 90, 40)
-        self.angle_vars = [tk.IntVar(value=90) for _ in range(3)] + [
-            tk.IntVar(value=40)
-        ]
+        # Initialize angles to a safe home position (inside JOINT_LIMITS)
+        self.angle_vars = [tk.IntVar(value=v) for v in HOME_POSITIONS]
 
         self.build_ui()
         self.refresh_ports()
@@ -116,13 +141,14 @@ class App:
                 orient="horizontal",
                 command=lambda _v, idx=i: self.on_slider(idx),
             )
+            # store the widget before set(), which may fire on_slider()
+            setattr(self, f"scale_{i}", scale)
             scale.set(self.angle_vars[i].get())
             scale.pack(side="left", fill="x", expand=True, padx=8)
 
             ttk.Label(row, textvariable=self.angle_vars[i], width=5, anchor="e").pack(
                 side="left"
             )
-            setattr(self, f"scale_{i}", scale)
 
         btns = ttk.Frame(left)
         btns.pack(fill="x", pady=12)
@@ -235,7 +261,7 @@ class App:
             # Fire up background thread worker to monitor input
             self.is_running = True
             self.serial_thread = threading.Thread(
-                target=self.read_serial_worker, daemon=True
+                target=self.read_serial_worker, args=(self.ser,), daemon=True
             )
             self.serial_thread.start()
             self.log_to_console("[System Client]: Connected to hardware device.\n")
@@ -246,22 +272,31 @@ class App:
 
     def disconnect(self):
         self.stop_play()
+        was_connected = self.ser is not None
         self.is_running = False  # Terminate reading worker loop
         if self.ser:
             try:
                 self.ser.close()
-            except:
+            except Exception:
                 pass
         self.ser = None
+        if self.serial_thread and self.serial_thread is not threading.current_thread():
+            self.serial_thread.join(timeout=0.5)
+        self.serial_thread = None
+        if not was_connected:
+            return
         self.status_var.set("Status: Serial line disconnected.")
         self.log_to_console("[System Client]: Disconnected from hardware device.\n")
 
-    def read_serial_worker(self):
-        """Asynchronous worker that watches incoming USB serial streams."""
-        while self.is_running and self.ser and self.ser.is_open:
+    def read_serial_worker(self, ser):
+        """Asynchronous worker that watches incoming USB serial streams.
+
+        Bound to the port it was started for, so a quick disconnect/reconnect
+        can't leave an old worker reading the new port."""
+        while self.is_running and ser is self.ser and ser.is_open:
             try:
-                if self.ser.in_waiting > 0:
-                    line = self.ser.readline().decode("utf-8", errors="ignore")
+                if ser.in_waiting > 0:
+                    line = ser.readline().decode("utf-8", errors="ignore")
                     if line:
                         self.serial_queue.put(line)
             except Exception:
@@ -294,10 +329,9 @@ class App:
             self.record_point()
 
     def home(self):
-        home_positions = [90, 90, 90, 40]
         for i in range(4):
-            getattr(self, f"scale_{i}").set(home_positions[i])
-            self.angle_vars[i].set(home_positions[i])
+            getattr(self, f"scale_{i}").set(HOME_POSITIONS[i])
+            self.angle_vars[i].set(HOME_POSITIONS[i])
         self.send_pending = True
         if self.is_recording:
             self.record_point()
@@ -359,7 +393,7 @@ class App:
 
     def apply_angles_to_ui(self, angles):
         for i, val in enumerate(angles):
-            clean_val = int(val)
+            clean_val = clamp_angle(i, val)
             getattr(self, f"scale_{i}").set(clean_val)
             self.angle_vars[i].set(clean_val)
         self.send_pending = True
@@ -390,12 +424,9 @@ class App:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            pts = data.get("points", [])
-            if not pts or not isinstance(pts, list):
-                raise ValueError(
-                    "The selected JSON profile contains corrupted coordinates."
-                )
-            self.recorded = pts
+            if not isinstance(data, dict):
+                raise ValueError("The selected file is not a motion profile.")
+            self.recorded = validate_points(data.get("points", []))
             self.status_var.set(
                 f"Successfully buffered timeline: {len(self.recorded)} steps loaded."
             )
@@ -475,7 +506,10 @@ class App:
         """Fires when closing window to terminate background operations."""
         self.is_running = False
         if self.ser and self.ser.is_open:
-            self.ser.close()
+            try:
+                self.ser.close()
+            except Exception:
+                pass
         self.root.destroy()
 
 
