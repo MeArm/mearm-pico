@@ -13,8 +13,35 @@ def list_serial_ports():
 def clamp(v, lo=0, hi=180):
     return max(lo, min(hi, int(v)))
 
+# Software safety limits (min, max) - keep in sync with the Pico firmware
+JOINT_LIMITS = [
+    (1, 179),   # Base
+    (35, 170),  # Left (Shoulder)
+    (30, 130),  # Right (Elbow)
+    (80, 170),  # Claw
+]
+
 def now_s():
     return time.time()
+
+def validate_points(pts):
+    """Check a loaded recording; returns points sorted by time with angles clamped."""
+    if not isinstance(pts, list) or not pts:
+        raise ValueError("No points found.")
+    out = []
+    for p in pts:
+        if not isinstance(p, dict) or "t" not in p or "angles" not in p:
+            raise ValueError("Bad format.")
+        a = p["angles"]
+        if not isinstance(a, list) or len(a) != 4:
+            raise ValueError("Each point needs exactly 4 angles.")
+        t = float(p["t"])
+        if t != t or t < 0:
+            raise ValueError("Bad time value.")
+        angles = [clamp(float(v), lo, hi) for v, (lo, hi) in zip(a, JOINT_LIMITS)]
+        out.append({"t": t, "angles": angles})
+    out.sort(key=lambda p: p["t"])
+    return out
 
 # ----------------------------
 # App
@@ -79,17 +106,17 @@ class App:
 
             ttk.Label(row, text=name, width=8).pack(side="left")
 
+            lo, hi = JOINT_LIMITS[i]
             scale = ttk.Scale(
-                row, from_=0, to=180, orient="horizontal",
+                row, from_=lo, to=hi, orient="horizontal",
                 command=lambda _v, idx=i: self.on_slider(idx)
             )
+            # store scale widget before set(), which may fire on_slider()
+            setattr(self, f"scale_{i}", scale)
             scale.set(90)
             scale.pack(side="left", fill="x", expand=True, padx=8)
 
             ttk.Label(row, textvariable=self.angle_vars[i], width=4).pack(side="left")
-
-            # store scale widget for reading current values
-            setattr(self, f"scale_{i}", scale)
 
         btns = ttk.Frame(left)
         btns.pack(fill="x", pady=8)
@@ -108,8 +135,7 @@ class App:
 
         ttk.Label(rec, text="Speed:").grid(row=2, column=0, sticky="w", padx=4)
         self.speed_var = tk.DoubleVar(value=1.0)
-        speed = ttk.Scale(rec, from_=0.25, to=2.0, orient="horizontal", command=self.on_speed)
-        speed.set(1.0)
+        speed = ttk.Scale(rec, from_=0.25, to=2.0, orient="horizontal", variable=self.speed_var)
         speed.grid(row=2, column=1, sticky="ew", padx=4)
 
         ttk.Button(rec, text="Save Recording…", command=self.save_recording).grid(row=3, column=0, sticky="ew", padx=4, pady=4)
@@ -191,7 +217,7 @@ class App:
 
     # ---------------- Actions ----------------
     def current_angles(self):
-        vals = [clamp(v.get()) for v in self.angle_vars]
+        vals = [clamp(v.get(), lo, hi) for v, (lo, hi) in zip(self.angle_vars, JOINT_LIMITS)]
         return vals
 
     def on_slider(self, idx):
@@ -202,11 +228,6 @@ class App:
         self.redraw_diagram()
         if self.is_recording:
             self.record_point()
-
-    def on_speed(self, _v):
-        self.play_speed = float(self.speed_var.get())
-        # ttk.Scale doesn't auto-bind var nicely; read from widget instead
-        # We'll just set from widget every tick too.
 
     def home(self):
         for i in range(4):
@@ -301,18 +322,16 @@ class App:
             pts = data.get("points", [])
             if not pts:
                 raise ValueError("No points found.")
-            # basic validation
-            for p in pts:
-                if "t" not in p or "angles" not in p or len(p["angles"]) != 4:
-                    raise ValueError("Bad format.")
-            self.recorded = pts
+            self.recorded = validate_points(pts)
             self.status_var.set(f"Loaded recording: {len(self.recorded)} points")
         except Exception as e:
             messagebox.showerror("Load failed", str(e))
 
     # ---------------- Diagram ----------------
     def redraw_diagram(self):
-        c = self.canvas
+        c = getattr(self, "canvas", None)
+        if c is None:  # sliders can fire before the canvas is built
+            return
         c.delete("all")
 
         w = int(c.winfo_width() or 320)

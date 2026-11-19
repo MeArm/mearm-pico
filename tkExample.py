@@ -2,7 +2,8 @@ import tkinter as tk
 import serial
 
 serialPort = "COM3"
-ser = serial.Serial(serialPort)
+# timeout=0 makes read() non-blocking so the GUI doesn't freeze
+ser = serial.Serial(serialPort, 115200, timeout=0)
 serBuffer = ""
 
 root = tk.Tk()
@@ -12,11 +13,10 @@ root.minsize(200, 200)
 root.maxsize(500, 500)
 root.geometry("300x300+50+50")
 
-def value_changed(event):
-    label.config(text=event.widget.get())
+def value_changed(value):
+    label.config(text=value)
 
-scale = tk.Scale(root, from_=0, to=180, orient="horizontal")
-scale.bind("<Motion>", value_changed)
+scale = tk.Scale(root, from_=0, to=180, orient="horizontal", command=value_changed)
 scale.pack(padx=5, pady=5, fill="x")
 
 # A helper label to show the selected value
@@ -29,7 +29,8 @@ log.pack()
 
 def readSerial():
     while True:
-        c = ser.read() # attempt to read a character from Serial
+        # attempt to read a character from Serial (returns bytes, so decode it)
+        c = ser.read().decode("utf-8", errors="ignore")
         
         #was anything read?
         if len(c) == 0:
